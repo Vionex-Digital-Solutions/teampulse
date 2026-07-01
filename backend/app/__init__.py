@@ -1,0 +1,1 @@
+"""Vionex TeamPulse backend application."""
