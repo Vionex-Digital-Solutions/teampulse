@@ -5,18 +5,21 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text
 
+import app.models  # noqa: F401  # register all models on Base.metadata
 from app.api.v1.router import api_v1_router
 from app.core.config import settings
 from app.core.database import engine
+from app.models.base import Base
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Application lifespan: startup and shutdown events."""
+    """Application lifespan: create tables on startup, dispose on shutdown."""
     async with engine.begin() as conn:
-        await conn.execute(text("SELECT 1"))
+        # Dev convenience: create any missing tables so the app runs without a
+        # separate migration step. Production would use Alembic migrations.
+        await conn.run_sync(Base.metadata.create_all)
     yield
     await engine.dispose()
 
