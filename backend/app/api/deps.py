@@ -1,5 +1,6 @@
 """Shared FastAPI dependencies for injection into route handlers."""
 
+import uuid
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, status
@@ -29,13 +30,18 @@ async def get_current_user(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid token: missing subject",
             )
+        # The JWT "sub" is a string, but User.id is a UUID column. Convert it
+        # so SQLAlchemy can bind it; a malformed value is an invalid token.
+        user_uuid = uuid.UUID(user_id)
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
         )
 
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(select(User).where(User.id == user_uuid))
     user = result.scalar_one_or_none()
 
     if user is None:
