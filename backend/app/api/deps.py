@@ -1,5 +1,6 @@
 """Shared FastAPI dependencies for injection into route handlers."""
 
+import uuid
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, status
@@ -23,12 +24,18 @@ async def get_current_user(
     """Extract and validate the current user from the JWT Bearer token."""
     try:
         payload = decode_access_token(credentials.credentials)
-        user_id: str | None = payload.get("sub")
-        if user_id is None:
+        subject: str | None = payload.get("sub")
+        if subject is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid token: missing subject",
             )
+        # The JWT "sub" is a string, but User.id is a UUID column. Comparing a
+        # str against the UUID type makes SQLAlchemy try str.hex and crash with
+        # a 500, so parse it here — a malformed value is an invalid token (401).
+        user_id = uuid.UUID(subject)
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

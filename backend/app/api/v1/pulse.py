@@ -1,9 +1,10 @@
 """Pulse check-in endpoints."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, status
 
 from app.api.deps import CurrentUser, DbSession
 from app.schemas.pulse import PulseCreate, PulseResponse, PulseTeamResponse
+from app.services.pulse_service import PulseAlreadyExistsError, PulseService
 
 router = APIRouter()
 
@@ -15,7 +16,14 @@ async def submit_pulse(
     current_user: CurrentUser,
 ) -> PulseResponse:
     """Submit a daily pulse check-in (mood, energy, blocker flag)."""
-    raise NotImplementedError("Sprint 1: implement pulse submission")
+    service = PulseService(db)
+    try:
+        return await service.create_pulse(current_user.id, payload)
+    except PulseAlreadyExistsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
 
 
 @router.get("/me", response_model=list[PulseResponse])
