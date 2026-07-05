@@ -43,11 +43,24 @@ export type PulseCreate = {
   note_ar?: string;
 };
 
+// ---- Standup ----
+export type StandupCreate = {
+  yesterday: string;
+  today: string;
+  blockers?: string;
+};
+
 export const api = {
   health: () => request<{ status: string }>("/health"),
 
   submitPulse: (data: PulseCreate) =>
     request("/api/v1/pulse", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  submitStandup: (data: StandupCreate) =>
+    request("/api/v1/standup", {
       method: "POST",
       body: JSON.stringify(data),
     }),
