@@ -1,6 +1,7 @@
 """Shared FastAPI dependencies for injection into route handlers."""
 
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -23,12 +24,12 @@ async def get_current_user(
     """Extract and validate the current user from the JWT Bearer token."""
     try:
         payload = decode_access_token(credentials.credentials)
-        user_id: str | None = payload.get("sub")
-        if user_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token: missing subject",
-            )
+        subject = payload.get("sub")
+        if subject is None:
+            raise ValueError("missing subject")
+        # The JWT subject is a string; User.id is a UUID column, so convert
+        # before querying (comparing the column to a raw str raises).
+        user_id = UUID(str(subject))
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
