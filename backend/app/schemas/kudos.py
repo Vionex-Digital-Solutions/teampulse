@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class KudosCategory(str, Enum):
@@ -74,6 +74,23 @@ class KudosCreate(BaseModel):
             ]
         }
     }
+
+    @field_validator("message", "message_ar")
+    @classmethod
+    def _reject_blank(cls, value: str | None) -> str | None:
+        """Trim surrounding whitespace and reject blank/whitespace-only text.
+
+        ``min_length=1`` alone still accepts a lone space, so a message of
+        ``"   "`` would slip through. We strip and re-check here, and store the
+        trimmed value. ``message_ar`` is optional, so ``None`` passes through
+        untouched.
+        """
+        if value is None:
+            return None
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("must not be blank or whitespace-only")
+        return trimmed
 
 
 class KudosResponse(BaseModel):
