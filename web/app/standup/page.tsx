@@ -11,6 +11,10 @@ export default function StandupPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!yesterday.trim() || !today.trim()) {
+      setStatus("Please fill in Yesterday and Today.");
+      return;
+    }
     setStatus("Submitting...");
     try {
       await api.submitStandup({
