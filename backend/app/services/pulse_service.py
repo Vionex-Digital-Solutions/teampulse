@@ -3,6 +3,7 @@
 import uuid
 from datetime import date
 
+from fastapi import HTTPException, status
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,8 +18,38 @@ class PulseService:
         self.db = db
 
     async def create_pulse(self, user_id: uuid.UUID, payload: PulseCreate) -> PulseEntry:
-        """Create a new pulse entry for a user. One per user per day."""
-        raise NotImplementedError("Sprint 1: implement pulse creation logic")
+        """Create a new pulse entry for a user. One per user per day.
+
+        Raises 409 Conflict if the user already checked in today, so the client
+        gets an honest signal instead of a silent 200-with-error.
+        """
+        today = date.today()
+
+        # Enforce "one pulse per user per day": a second submit is not bad input
+        # (the payload is valid) — it conflicts with existing state -> 409.
+        existing_stmt = select(PulseEntry).where(
+            PulseEntry.user_id == user_id,
+            PulseEntry.pulse_date == today,
+        )
+        existing = await self.db.execute(existing_stmt)
+        if existing.scalar_one_or_none() is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="You have already submitted a pulse today",
+            )
+
+        pulse = PulseEntry(
+            user_id=user_id,
+            pulse_date=today,
+            mood=payload.mood,
+            energy=payload.energy,
+            has_blocker=payload.has_blocker,
+            note=payload.note,
+            note_ar=payload.note_ar,
+        )
+        self.db.add(pulse)
+        await self.db.flush()  # assigns id + created_at (Python-side defaults)
+        return pulse
 
     async def get_user_pulses(
         self, user_id: uuid.UUID, limit: int = 30
