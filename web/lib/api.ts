@@ -99,7 +99,15 @@ export const api = {
 
   getTeamPulses: () => request("/api/v1/pulse/team"),
 
-  getKudosFeed: () => request<KudosResponse[]>("/api/v1/kudos/feed"),
+  // limit/offset are optional; when omitted the backend defaults apply
+  // (limit=50, offset=0), so existing callers keep working unchanged.
+  getKudosFeed: (params: { limit?: number; offset?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params.offset !== undefined) qs.set("offset", String(params.offset));
+    const suffix = qs.toString() ? `?${qs}` : "";
+    return request<KudosResponse[]>(`/api/v1/kudos/feed${suffix}`);
+  },
 
   submitKudos: (data: KudosCreate) =>
     request<KudosResponse>("/api/v1/kudos", {

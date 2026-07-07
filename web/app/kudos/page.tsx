@@ -12,6 +12,11 @@ import {
 // backend remains the source of truth; this is purely a UX convenience.
 const MAX_MESSAGE_LENGTH = 1000;
 
+// How many kudos to fetch per page. When a page comes back full, there may be
+// more to load; a short page means we've reached the end. (Backend caps the
+// limit at 100 — see backend/app/api/v1/kudos.py.)
+const PAGE_SIZE = 20;
+
 // The fixed set of categories the backend accepts (KudosCategory enum), paired
 // with human-friendly labels for the <select>. Keep the values in sync with
 // backend/app/schemas/kudos.py.
@@ -101,6 +106,10 @@ export default function KudosPage() {
   const [feed, setFeed] = useState<KudosResponse[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [feedError, setFeedError] = useState<string>("");
+  // Pagination: whether a "load more" fetch is in flight, and whether the last
+  // page came back full (so there may still be more to load).
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
 
   // ---- Form state ----
   const [receiverId, setReceiverId] = useState("");
@@ -114,21 +123,38 @@ export default function KudosPage() {
 
   // Load the kudos feed. Wrapped in useCallback so we can call it on mount and
   // again after a successful submission without redefining it each render.
-  const loadFeed = useCallback(async () => {
-    setIsLoading(true);
-    setFeedError("");
+  // offset === 0 loads the first page and replaces the list (fresh load, retry,
+  // or after submitting); offset > 0 appends the next page ("Load more").
+  const loadFeed = useCallback(async (offset: number) => {
+    const replacing = offset === 0;
+    // First page drives the full-feed loading/error UI; "load more" uses its
+    // own flag so the existing feed stays visible while the next page loads.
+    if (replacing) {
+      setIsLoading(true);
+      setFeedError("");
+    } else {
+      setIsLoadingMore(true);
+    }
     try {
-      const data = await api.getKudosFeed();
-      setFeed(data);
+      const data = await api.getKudosFeed({ limit: PAGE_SIZE, offset });
+      setFeed((prev) => (replacing ? data : [...prev, ...data]));
+      // A full page means there may be more; a short page is the end.
+      setHasMore(data.length === PAGE_SIZE);
     } catch (err: any) {
       setFeedError(friendlyError(err?.status));
     } finally {
-      setIsLoading(false);
+      if (replacing) setIsLoading(false);
+      else setIsLoadingMore(false);
     }
   }, []);
 
+  // Fetch the next page, starting after everything we already show.
+  const loadMore = useCallback(() => {
+    loadFeed(feed.length);
+  }, [loadFeed, feed.length]);
+
   useEffect(() => {
-    loadFeed();
+    loadFeed(0);
   }, [loadFeed]);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -165,8 +191,8 @@ export default function KudosPage() {
       setReceiverId("");
       setMessage("");
       setMessageAr("");
-      // Refresh the feed so the new kudos appears at the top.
-      await loadFeed();
+      // Refresh the feed from page 1 so the new kudos appears at the top.
+      await loadFeed(0);
     } catch (err: any) {
       // Map HTTP status codes to friendly messages instead of exposing raw
       // status codes or backend error strings to the user.
@@ -322,7 +348,7 @@ export default function KudosPage() {
             <p className="text-sm text-red-600">❌ {feedError}</p>
             <button
               type="button"
-              onClick={loadFeed}
+              onClick={() => loadFeed(0)}
               className="text-sm text-accent underline"
             >
               Try again
@@ -359,6 +385,19 @@ export default function KudosPage() {
               </li>
             ))}
           </ul>
+        )}
+
+        {/* Only offer "Load more" once the first page is shown and the last
+            page came back full. Disabled while the next page is loading. */}
+        {!isLoading && !feedError && hasMore && (
+          <button
+            type="button"
+            onClick={loadMore}
+            disabled={isLoadingMore}
+            className="text-sm text-accent underline disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {isLoadingMore ? "Loading…" : "Load more"}
+          </button>
         )}
       </section>
     </div>
