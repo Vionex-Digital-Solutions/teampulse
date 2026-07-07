@@ -50,6 +50,36 @@ export type StandupCreate = {
   blockers?: string;
 };
 
+// ---- Kudos ----
+// Mirrors the backend KudosCategory enum (see backend/app/schemas/kudos.py).
+export type KudosCategory =
+  | "teamwork"
+  | "innovation"
+  | "mentorship"
+  | "above_and_beyond"
+  | "quality"
+  | "communication";
+
+// Request body for POST /api/v1/kudos. There is no sender_id: the sender is
+// always the authenticated user (taken from the JWT on the backend).
+export type KudosCreate = {
+  receiver_id: string;
+  category: KudosCategory;
+  message: string;
+  message_ar?: string;
+};
+
+// A single kudos entry as returned by POST /kudos and GET /kudos/feed.
+export type KudosResponse = {
+  id: string;
+  sender_id: string;
+  receiver_id: string;
+  category: string;
+  message: string;
+  message_ar: string | null;
+  created_at: string;
+};
+
 export const api = {
   health: () => request<{ status: string }>("/health"),
 
@@ -69,7 +99,21 @@ export const api = {
 
   getTeamPulses: () => request("/api/v1/pulse/team"),
 
-  getKudosFeed: () => request("/api/v1/kudos/feed"),
+  // limit/offset are optional; when omitted the backend defaults apply
+  // (limit=50, offset=0), so existing callers keep working unchanged.
+  getKudosFeed: (params: { limit?: number; offset?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params.offset !== undefined) qs.set("offset", String(params.offset));
+    const suffix = qs.toString() ? `?${qs}` : "";
+    return request<KudosResponse[]>(`/api/v1/kudos/feed${suffix}`);
+  },
+
+  submitKudos: (data: KudosCreate) =>
+    request<KudosResponse>("/api/v1/kudos", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
 
   getTeamStandups: () => request("/api/v1/standup/team"),
 };
