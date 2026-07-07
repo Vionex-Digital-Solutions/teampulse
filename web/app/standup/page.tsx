@@ -3,6 +3,21 @@
 import { useState } from "react";
 import { api } from "@/lib/api";
 
+// Translate an HTTP status code into a friendly, user-facing message.
+// We deliberately never surface the raw status code or backend error text.
+function friendlyError(status?: number): string {
+  if (!status) {
+    return "Unable to connect to the server. Please try again later.";
+  }
+  if (status === 400 || status === 422) {
+    return "Please check your input and try again.";
+  }
+  if (status === 500) {
+    return "We couldn't submit your standup. Please try again later.";
+  }
+  return "Something unexpected happened. Please try again.";
+}
+
 export default function StandupPage() {
   const [yesterday, setYesterday] = useState("");
   const [today, setToday] = useState("");
@@ -22,11 +37,11 @@ export default function StandupPage() {
         today,
         blockers: blockers || undefined,
       });
-      setStatus("✅ Standup submitted!");
+      setStatus("✅ Standup submitted successfully!");
     } catch (err: any) {
-      // The backend endpoint is still a stub (NotImplementedError) —
-      // it will 500 until the backend team implements it.
-      setStatus(`❌ ${err.status}: ${err.message}`);
+      // Map HTTP status codes to friendly messages instead of exposing
+      // raw status codes or backend error strings to the user.
+      setStatus(`❌ ${friendlyError(err?.status)}`);
     }
   }
 
