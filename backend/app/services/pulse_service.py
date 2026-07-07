@@ -3,6 +3,8 @@
 import uuid
 from datetime import date
 
+from fastapi import HTTPException, status
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.pulse import PulseEntry
@@ -16,15 +18,78 @@ class PulseService:
         self.db = db
 
     async def create_pulse(self, user_id: uuid.UUID, payload: PulseCreate) -> PulseEntry:
-        """Create a new pulse entry for a user. One per user per day."""
-        raise NotImplementedError("Sprint 1: implement pulse creation logic")
+        """Create a new pulse entry for a user. One per user per day.
+
+        Raises 409 Conflict if the user already checked in today, so the client
+        gets an honest signal instead of a silent 200-with-error.
+        """
+        today = date.today()
+
+        # Enforce "one pulse per user per day": a second submit is not bad input
+        # (the payload is valid) — it conflicts with existing state -> 409.
+        existing_stmt = select(PulseEntry).where(
+            PulseEntry.user_id == user_id,
+            PulseEntry.pulse_date == today,
+        )
+        existing = await self.db.execute(existing_stmt)
+        if existing.scalar_one_or_none() is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="You have already submitted a pulse today",
+            )
+
+        pulse = PulseEntry(
+            user_id=user_id,
+            pulse_date=today,
+            mood=payload.mood,
+            energy=payload.energy,
+            has_blocker=payload.has_blocker,
+            note=payload.note,
+            note_ar=payload.note_ar,
+        )
+        self.db.add(pulse)
+        await self.db.flush()  # assigns id + created_at (Python-side defaults)
+        return pulse
 
     async def get_user_pulses(
         self, user_id: uuid.UUID, limit: int = 30
     ) -> list[PulseEntry]:
         """Get a user's pulse history, most recent first."""
-        raise NotImplementedError("Sprint 1: implement user pulse retrieval")
+        stmt = (
+            select(PulseEntry)
+            .where(PulseEntry.user_id == user_id)
+            .order_by(PulseEntry.pulse_date.desc())
+            .limit(limit)
+        )
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
 
     async def get_team_summary(self, target_date: date | None = None) -> PulseTeamResponse:
         """Get aggregated team pulse data for a given date."""
-        raise NotImplementedError("Sprint 1: implement team pulse aggregation")
+        if target_date is None:
+            target_date = date.today()
+
+        # Step 1: get the raw rows for the date (needed for `entries`)
+        entries_stmt = select(PulseEntry).where(PulseEntry.pulse_date == target_date)
+        entries_result = await self.db.execute(entries_stmt)
+        entries = list(entries_result.scalars().all())
+
+        # Step 2: get the aggregates from the SAME filtered set
+        agg_stmt = select(
+            func.avg(PulseEntry.mood).label("avg_mood"),
+            func.avg(PulseEntry.energy).label("avg_energy"),
+            func.count(PulseEntry.id).label("total_responses"),
+            func.count(case((PulseEntry.has_blocker.is_(True), 1))).label("blocker_count"),
+        ).where(PulseEntry.pulse_date == target_date)
+
+        agg_result = await self.db.execute(agg_stmt)
+        row = agg_result.one()
+
+        return PulseTeamResponse(
+            date=target_date,
+            avg_mood=round(row.avg_mood, 2) if row.avg_mood is not None else 0.0,
+            avg_energy=round(row.avg_energy, 2) if row.avg_energy is not None else 0.0,
+            blocker_count=row.blocker_count or 0,
+            total_responses=row.total_responses or 0,
+            entries=entries,
+        )
