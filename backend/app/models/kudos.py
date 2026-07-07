@@ -2,7 +2,7 @@
 
 import uuid
 
-from sqlalchemy import ForeignKey, String, Text
+from sqlalchemy import ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -12,6 +12,14 @@ class Kudos(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """A peer-to-peer kudos/recognition entry."""
 
     __tablename__ = "kudos"
+
+    # The feed orders by (created_at DESC, id DESC) and the keyset cursor filters
+    # on that same tuple. A composite index on (created_at, id) lets Postgres
+    # serve both the ordering and the cursor predicate from the index (Index Scan
+    # Backward) instead of a Seq Scan + Sort over the whole table.
+    __table_args__ = (
+        Index("ix_kudos_created_at_id", "created_at", "id"),
+    )
 
     sender_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id"), nullable=False, index=True
