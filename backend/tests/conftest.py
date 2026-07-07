@@ -42,9 +42,19 @@ async def setup_database():
 
 
 async def override_get_async_session() -> AsyncGenerator[AsyncSession, None]:
-    """Override the DB session dependency for tests."""
+    """Override the DB session dependency for tests.
+
+    Mirrors the production ``get_async_session``: commit after the request so
+    data written in one request (e.g. register) is visible to the next. Without
+    this the test double diverges from production and cross-request flows fail.
+    """
     async with test_session_factory() as session:
-        yield session
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
 
 app.dependency_overrides[get_async_session] = override_get_async_session
