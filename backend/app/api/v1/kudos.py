@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import AsyncGenerator
+from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
@@ -10,8 +11,15 @@ from sqlalchemy import select
 from app.api.deps import CurrentUser, CurrentUserFromQuery, DbSession
 from app.models.kudos import Kudos
 from app.models.user import User
-from app.schemas.kudos import KudosCreate, KudosResponse
+from app.schemas.kudos import (
+    DEFAULT_FEED_LIMIT,
+    MAX_FEED_LIMIT,
+    KudosCreate,
+    KudosFeedPage,
+    KudosResponse,
+)
 from app.services.kudos_broadcaster import broadcaster
+from app.services.kudos_service import InvalidCursorError, KudosService
 
 router = APIRouter()
 
@@ -110,56 +118,32 @@ async def send_kudos(
     return kudos
 
 
-@router.get(
-    "/feed",
-    response_model=list[KudosResponse],
-    summary="Get the team kudos feed",
-    description=(
-        "Feed of all kudos for the team, visible to any logged-in teammate, "
-        "**newest first**.\n\n"
-        "Paginate with `limit` and `offset` — e.g. `?limit=20&offset=20` for "
-        "the second page of 20. Returns an empty list when there are no more "
-        "entries.\n\n"
-        "**Auth:** requires a Bearer token. Get one from "
-        "`POST /api/v1/auth/login`, then click **Authorize** (top right) and "
-        "paste it — or send it yourself as `Authorization: Bearer <token>`."
-    ),
-    responses={
-        200: {"description": "A list of kudos, newest first (may be empty)."},
-        401: {
-            "description": "Missing or invalid authentication token.",
-            "content": {
-                "application/json": {
-                    "example": {"detail": "Invalid or expired token"}
-                }
-            },
-        },
-    },
-)
+@router.get("/feed", response_model=KudosFeedPage)
 async def get_kudos_feed(
     db: DbSession,
     current_user: CurrentUser,
-    limit: int = Query(
-        50,
-        ge=1,
-        le=100,
-        description="Maximum number of kudos to return (1–100).",
-    ),
-    offset: int = Query(
-        0,
-        ge=0,
-        description="Number of kudos to skip from the start, for pagination.",
-    ),
-) -> list[KudosResponse]:
-    """Get the public kudos feed for the team."""
-    # Newest kudos first, with pagination via limit/offset.
-    result = await db.execute(
-        select(Kudos)
-        .order_by(Kudos.created_at.desc())
-        .limit(limit)
-        .offset(offset)
-    )
-    return list(result.scalars().all())
+    limit: Annotated[
+        int,
+        Query(
+            ge=1,
+            le=MAX_FEED_LIMIT,
+            description="How many kudos to return (1-100).",
+        ),
+    ] = DEFAULT_FEED_LIMIT,
+    cursor: Annotated[
+        str | None,
+        Query(description="Opaque cursor from a previous page's next_cursor."),
+    ] = None,
+) -> KudosFeedPage:
+    """Get the public kudos feed for the team, newest first (cursor-paginated)."""
+    service = KudosService(db)
+    try:
+        return await service.get_feed(limit=limit, cursor=cursor)
+    except InvalidCursorError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
 
 
 @router.get(

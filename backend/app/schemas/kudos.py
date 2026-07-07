@@ -6,6 +6,12 @@ from enum import Enum
 
 from pydantic import BaseModel, Field, field_validator
 
+# Page-size policy for the kudos feed. These bound how many rows a single
+# request can pull back: DEFAULT is what a caller gets when they don't ask,
+# MAX is the hard ceiling so nobody can request the entire table at once.
+DEFAULT_FEED_LIMIT = 20
+MAX_FEED_LIMIT = 100
+
 
 class KudosCategory(str, Enum):
     """The reason a kudos is being given.
@@ -154,4 +160,17 @@ class KudosResponse(BaseModel):
         ...,
         description="UTC timestamp of when the kudos was created (ISO 8601).",
         examples=["2026-07-05T14:32:00Z"],
+    )
+
+
+class KudosFeedPage(BaseModel):
+    """One page of the kudos feed plus the cursor for the next page."""
+
+    items: list[KudosResponse]
+    next_cursor: str | None = Field(
+        default=None,
+        description=(
+            "Opaque cursor. Pass it back as ?cursor=... to fetch the next "
+            "page. null means there are no more items."
+        ),
     )
