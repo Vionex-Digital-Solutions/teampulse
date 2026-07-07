@@ -22,26 +22,36 @@ export default function StandupPage() {
   const [yesterday, setYesterday] = useState("");
   const [today, setToday] = useState("");
   const [blockers, setBlockers] = useState("");
-  const [status, setStatus] = useState<string>("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string>("");
+  const [success, setSuccess] = useState<boolean>(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    // Guard against double submission (e.g. rapid double-clicks or Enter).
+    if (isSubmitting) return;
+
     if (!yesterday.trim() || !today.trim()) {
-      setStatus("Please fill in Yesterday and Today.");
+      setError("Please fill in Yesterday and Today.");
       return;
     }
-    setStatus("Submitting...");
+
+    setIsSubmitting(true);
+    setError("");
+    setSuccess(false);
     try {
       await api.submitStandup({
         yesterday,
         today,
         blockers: blockers || undefined,
       });
-      setStatus("✅ Standup submitted successfully!");
+      setSuccess(true);
     } catch (err: any) {
       // Map HTTP status codes to friendly messages instead of exposing
       // raw status codes or backend error strings to the user.
-      setStatus(`❌ ${friendlyError(err?.status)}`);
+      setError(friendlyError(err?.status));
+    } finally {
+      setIsSubmitting(false);
     }
   }
 
@@ -55,7 +65,8 @@ export default function StandupPage() {
           <textarea
             value={yesterday}
             onChange={(e) => setYesterday(e.target.value)}
-            className="w-full rounded-lg border p-2"
+            disabled={isSubmitting}
+            className="w-full rounded-lg border p-2 disabled:opacity-60"
             rows={3}
           />
         </div>
@@ -65,7 +76,8 @@ export default function StandupPage() {
           <textarea
             value={today}
             onChange={(e) => setToday(e.target.value)}
-            className="w-full rounded-lg border p-2"
+            disabled={isSubmitting}
+            className="w-full rounded-lg border p-2 disabled:opacity-60"
             rows={3}
           />
         </div>
@@ -75,20 +87,27 @@ export default function StandupPage() {
           <textarea
             value={blockers}
             onChange={(e) => setBlockers(e.target.value)}
-            className="w-full rounded-lg border p-2"
+            disabled={isSubmitting}
+            className="w-full rounded-lg border p-2 disabled:opacity-60"
             rows={3}
           />
         </div>
 
         <button
           type="submit"
-          className="bg-accent text-white px-5 py-2 rounded-lg font-medium"
+          disabled={isSubmitting}
+          className="bg-accent text-white px-5 py-2 rounded-lg font-medium disabled:opacity-60 disabled:cursor-not-allowed"
         >
-          Submit
+          {isSubmitting ? "Submitting..." : "Submit"}
         </button>
       </form>
 
-      {status && <p className="text-sm">{status}</p>}
+      {success && (
+        <p className="text-sm text-green-600">
+          ✅ Standup submitted successfully!
+        </p>
+      )}
+      {error && <p className="text-sm text-red-600">❌ {error}</p>}
     </div>
   );
 }
