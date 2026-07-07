@@ -10,6 +10,7 @@ import app.models  # noqa: F401  # register all models on Base.metadata
 from app.api.v1.router import api_v1_router
 from app.core.config import settings
 from app.core.database import engine
+from app.graphql.schema import graphql_router
 from app.models.base import Base
 
 
@@ -44,6 +45,9 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(api_v1_router, prefix="/api/v1")
+
+    # Read-only GraphQL endpoint, mounted alongside (not replacing) REST.
+    app.include_router(graphql_router, prefix="/graphql", tags=["graphql"])
 
     @app.get("/health", tags=["health"])
     async def health_check() -> dict[str, str]:
