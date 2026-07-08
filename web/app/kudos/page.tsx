@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
   type KudosCategory,
@@ -66,6 +66,17 @@ function friendlyError(status?: number): string {
   return "Something unexpected happened. Please try again.";
 }
 
+// Safely pull an HTTP status off an unknown thrown value. Our api client throws
+// an ApiError ({ status, message }); anything else (a network TypeError, etc.)
+// has no status and maps to the generic "can't connect" message via friendlyError.
+function errorStatus(err: unknown): number | undefined {
+  if (typeof err === "object" && err !== null && "status" in err) {
+    const status = (err as { status: unknown }).status;
+    return typeof status === "number" ? status : undefined;
+  }
+  return undefined;
+}
+
 // Pure validation: derive the set of field errors from the current values.
 // Keeping this out of the component makes the rules easy to read and test.
 function validate(values: {
@@ -107,15 +118,53 @@ function formatDate(iso: string): string {
   return date.toLocaleString();
 }
 
+// Narrow an untrusted SSE payload to a KudosResponse before we trust it.
+// JSON.parse only proves it's valid JSON — a valid-JSON-but-wrong-shape event
+// (null, a number, a partial object, a stray keep-alive) must never reach the
+// feed: at minimum it would prepend a card with an `undefined` React key and a
+// broken dedup. We check exactly the fields the feed reads.
+function isKudosResponse(value: unknown): value is KudosResponse {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.id === "string" &&
+    typeof v.sender_id === "string" &&
+    typeof v.receiver_id === "string" &&
+    typeof v.category === "string" &&
+    typeof v.message === "string" &&
+    typeof v.created_at === "string" &&
+    (v.message_ar === null ||
+      v.message_ar === undefined ||
+      typeof v.message_ar === "string")
+  );
+}
+
 export default function KudosPage() {
   // ---- Feed state ----
   const [feed, setFeed] = useState<KudosResponse[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [feedError, setFeedError] = useState<string>("");
+  // Non-blocking notices that must NOT replace the feed: a background refresh
+  // (e.g. after posting a kudos) or a "load more" that fails. The existing feed
+  // stays on screen; we surface these inline so the failure is recoverable
+  // without wiping content the user is already reading.
+  const [refreshError, setRefreshError] = useState<string>("");
+  const [loadMoreError, setLoadMoreError] = useState<string>("");
   // Pagination: whether a "load more" fetch is in flight, and whether the last
   // page came back full (so there may still be more to load).
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
+  // Message for a visually-hidden live region: screen-reader users can't see a
+  // new kudos slide into the feed, so we announce live (SSE) arrivals here.
+  const [liveAnnouncement, setLiveAnnouncement] = useState("");
+
+  // Cancellation + lifecycle guards for feed fetches. `feedControllerRef` holds
+  // the in-flight fetch so a newer request (retry, post-submit refresh, next
+  // "load more") can abort the previous one — latest request wins, and a slow
+  // stale response can never clobber newer state. `mountedRef` gates every
+  // setState so an in-flight fetch that resolves after unmount is a no-op.
+  const feedControllerRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
 
   // ---- Form state ----
   const [receiverId, setReceiverId] = useState("");
@@ -131,36 +180,85 @@ export default function KudosPage() {
   // again after a successful submission without redefining it each render.
   // offset === 0 loads the first page and replaces the list (fresh load, retry,
   // or after submitting); offset > 0 appends the next page ("Load more").
-  const loadFeed = useCallback(async (offset: number) => {
-    const replacing = offset === 0;
-    // First page drives the full-feed loading/error UI; "load more" uses its
-    // own flag so the existing feed stays visible while the next page loads.
-    if (replacing) {
-      setIsLoading(true);
-      setFeedError("");
-    } else {
-      setIsLoadingMore(true);
-    }
-    try {
-      const data = await api.getKudosFeed({ limit: PAGE_SIZE, offset });
-      // On append, drop any items already shown. A live SSE event arriving
-      // while this "load more" is in flight shifts the backend's offset window,
-      // so the next page can overlap what we already have; dedup by id keeps
-      // each kudos (and its React key) unique. Replacing needs no dedup.
-      setFeed((prev) => {
-        if (replacing) return data;
-        const seen = new Set(prev.map((k) => k.id));
-        return [...prev, ...data.filter((k) => !seen.has(k.id))];
-      });
-      // A full page means there may be more; a short page is the end.
-      setHasMore(data.length === PAGE_SIZE);
-    } catch (err: any) {
-      setFeedError(friendlyError(err?.status));
-    } finally {
-      if (replacing) setIsLoading(false);
-      else setIsLoadingMore(false);
-    }
-  }, []);
+  const loadFeed = useCallback(
+    async (offset: number, opts: { silent?: boolean } = {}) => {
+      const replacing = offset === 0;
+      // A "silent" replace is a background refresh (e.g. right after posting a
+      // kudos): it must not flip the whole feed to the blocking loading/error
+      // UI, so on failure it keeps the existing feed and shows a soft notice.
+      const silent = opts.silent ?? false;
+
+      // Supersede any in-flight feed fetch: the newest request wins and the old
+      // one is cancelled so its response can't land on top of newer state.
+      feedControllerRef.current?.abort();
+      const controller = new AbortController();
+      feedControllerRef.current = controller;
+
+      // Clear the recoverable notices on every new attempt.
+      setRefreshError("");
+      setLoadMoreError("");
+      if (replacing) {
+        // A page-1 load owns the primary loading UI and cancels any pending
+        // "load more" (we just aborted its fetch above).
+        setIsLoadingMore(false);
+        if (!silent) {
+          setIsLoading(true);
+          setFeedError("");
+        }
+      } else {
+        setIsLoadingMore(true);
+      }
+
+      try {
+        const data = await api.getKudosFeed(
+          { limit: PAGE_SIZE, offset },
+          { signal: controller.signal }
+        );
+        // Bail if we unmounted or were superseded while the fetch was in flight.
+        if (!mountedRef.current || controller.signal.aborted) return;
+        // On append, drop any items already shown. A live SSE event arriving
+        // while this "load more" is in flight shifts the backend's offset window,
+        // so the next page can overlap what we already have; dedup by id keeps
+        // each kudos (and its React key) unique. Replacing needs no dedup.
+        setFeed((prev) => {
+          if (replacing) return data;
+          const seen = new Set(prev.map((k) => k.id));
+          return [...prev, ...data.filter((k) => !seen.has(k.id))];
+        });
+        // A full page means there may be more; a short page is the end.
+        setHasMore(data.length === PAGE_SIZE);
+      } catch (err) {
+        // A cancelled/superseded fetch or a post-unmount resolution is not a
+        // real error — never surface it. Any abort we trigger (supersede or
+        // unmount) is on this controller, so `signal.aborted` covers the
+        // AbortError case too; no need to sniff the thrown value's name.
+        if (!mountedRef.current || controller.signal.aborted) {
+          return;
+        }
+        const status = errorStatus(err);
+        if (replacing && !silent) {
+          // Initial load / explicit retry failed with nothing to preserve:
+          // show the full error screen.
+          setFeedError(friendlyError(status));
+        } else if (replacing) {
+          // Background refresh failed: keep the existing feed, note it softly.
+          setRefreshError(friendlyError(status));
+        } else {
+          // "Load more" failed: keep what we have; the button stays available
+          // to retry (hasMore is untouched on error).
+          setLoadMoreError(friendlyError(status));
+        }
+      } finally {
+        // Only the newest fetch settles the loading flags, and only while
+        // mounted — a superseded fetch must not toggle UI the new one now owns.
+        if (mountedRef.current && feedControllerRef.current === controller) {
+          if (replacing && !silent) setIsLoading(false);
+          else if (!replacing) setIsLoadingMore(false);
+        }
+      }
+    },
+    []
+  );
 
   // Fetch the next page, starting after everything we already show.
   const loadMore = useCallback(() => {
@@ -168,7 +266,14 @@ export default function KudosPage() {
   }, [loadFeed, feed.length]);
 
   useEffect(() => {
+    // Re-arm on (re)mount — React StrictMode mounts, unmounts, then remounts.
+    mountedRef.current = true;
     loadFeed(0);
+    return () => {
+      // Block any late setState and cancel the in-flight fetch on unmount.
+      mountedRef.current = false;
+      feedControllerRef.current?.abort();
+    };
   }, [loadFeed]);
 
   // ---- Live updates (Server-Sent Events) ----
@@ -189,19 +294,47 @@ export default function KudosPage() {
       `${API_BASE_URL}/api/v1/kudos/stream?token=${encodeURIComponent(token)}`
     );
 
+    // Distinguishes the first successful connect from later auto-reconnects.
+    // Local to this effect run (not a ref) so a StrictMode remount starts fresh
+    // and doesn't mistake its initial connect for a reconnect.
+    let established = false;
+
+    es.onopen = () => {
+      // The first open is the initial connection; history is already loaded by
+      // loadFeed(0) on mount, so there's nothing to reconcile. Every later open
+      // is a browser auto-reconnect after a dropped connection — and any kudos
+      // created during that gap were never delivered to us. The backend sends
+      // no event id, so the browser cannot replay them via Last-Event-ID (see
+      // note below); the honest frontend-only recovery is to silently refetch
+      // page 1 and let dedup-by-id merge it in. This backfills events that still
+      // fall within the first page; a longer outage needs backend replay.
+      if (!established) {
+        established = true;
+        return;
+      }
+      loadFeed(0, { silent: true });
+    };
+
     es.onmessage = (event) => {
       // Each event's data is one KudosResponse JSON object (same shape as feed
-      // items). Guard against a malformed payload so a bad event can't crash us.
-      let incoming: KudosResponse;
+      // items). Parse defensively, then validate the shape: a bad or unexpected
+      // payload must be dropped, never prepended.
+      let incoming: unknown;
       try {
         incoming = JSON.parse(event.data);
       } catch {
         return;
       }
+      if (!isKudosResponse(incoming)) return;
+      const kudos = incoming;
+      // Announce the arrival for screen readers. Every stream message is a real
+      // new-kudos event on the backend, so announcing here is accurate even
+      // though the visual prepend below dedupes a kudos you sent yourself.
+      setLiveAnnouncement(`New ${categoryLabel(kudos.category)} kudos received.`);
       // Prepend newest-first, but ignore anything already shown — e.g. a kudos
       // you just sent arrives via both loadFeed(0) and this stream.
       setFeed((prev) =>
-        prev.some((k) => k.id === incoming.id) ? prev : [incoming, ...prev]
+        prev.some((k) => k.id === kudos.id) ? prev : [kudos, ...prev]
       );
     };
 
@@ -218,7 +351,9 @@ export default function KudosPage() {
 
     // Close the stream on unmount so we don't leak it or keep reconnecting.
     return () => es.close();
-  }, []);
+    // loadFeed is stable (useCallback with []), so this effect still connects
+    // exactly once; it's in deps only because onopen calls it.
+  }, [loadFeed]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -254,12 +389,15 @@ export default function KudosPage() {
       setReceiverId("");
       setMessage("");
       setMessageAr("");
-      // Refresh the feed from page 1 so the new kudos appears at the top.
-      await loadFeed(0);
-    } catch (err: any) {
+      // Refresh the feed from page 1 so the new kudos appears at the top. Use a
+      // silent refresh: the submit already succeeded, so if this background
+      // fetch fails we must keep the existing feed on screen (and the SSE stream
+      // will surface the new kudos anyway) instead of wiping it with an error.
+      await loadFeed(0, { silent: true });
+    } catch (err) {
       // Map HTTP status codes to friendly messages instead of exposing raw
       // status codes or backend error strings to the user.
-      setSubmitError(friendlyError(err?.status));
+      setSubmitError(friendlyError(errorStatus(err)));
     } finally {
       setIsSubmitting(false);
     }
@@ -268,6 +406,13 @@ export default function KudosPage() {
   return (
     <div className="space-y-8">
       <h1 className="text-2xl font-bold text-navy">Kudos</h1>
+
+      {/* Visually-hidden live region for live (SSE) arrivals. Kept mounted so
+          the announcement is picked up when its text changes; polite so it
+          never interrupts what the user is doing. */}
+      <p className="sr-only" aria-live="polite">
+        {liveAnnouncement}
+      </p>
 
       {/* ---- Send kudos form ---- */}
       <section className="space-y-4">
@@ -392,36 +537,65 @@ export default function KudosPage() {
           </button>
         </form>
 
-        {success && (
-          <p className="text-sm text-green-600">✅ Kudos sent!</p>
-        )}
-        {submitError && (
-          <p className="text-sm text-red-600">❌ {submitError}</p>
-        )}
+        {/* Submit outcome in a polite live region so it's announced when it
+            appears — otherwise a screen reader gives no feedback that the send
+            succeeded or failed. */}
+        <div aria-live="polite">
+          {success && (
+            <p className="text-sm text-green-600">✅ Kudos sent!</p>
+          )}
+          {submitError && (
+            <p className="text-sm text-red-600">❌ {submitError}</p>
+          )}
+        </div>
       </section>
 
       {/* ---- Kudos feed ---- */}
       <section className="space-y-4">
         <h2 className="text-lg font-semibold text-navy">Recent kudos</h2>
 
-        {isLoading ? (
-          <p className="text-sm text-slate-600">Loading feed…</p>
-        ) : feedError ? (
-          <div className="space-y-2">
-            <p className="text-sm text-red-600">❌ {feedError}</p>
+        {/* Non-blocking notice for a failed background refresh (e.g. after
+            posting). The existing feed below stays visible; this only informs
+            and offers a soft retry. */}
+        {refreshError && !feedError && (
+          <p className="text-sm text-amber-600" role="status">
+            ⚠ Couldn&apos;t refresh the feed. {refreshError}{" "}
             <button
               type="button"
-              onClick={() => loadFeed(0)}
-              className="text-sm text-accent underline"
+              onClick={() => loadFeed(0, { silent: true })}
+              className="text-accent underline"
             >
               Try again
             </button>
-          </div>
-        ) : feed.length === 0 ? (
-          <p className="text-sm text-slate-600">
-            No kudos yet. Be the first to recognise a teammate!
           </p>
-        ) : (
+        )}
+
+        {/* Loading / error / empty status share one polite live region so a
+            screen reader announces the transitions between them. The list of
+            kudos is rendered outside this region: announcing every card
+            wholesale (including raw UUIDs) would be noise, not help. */}
+        <div role="status" aria-live="polite">
+          {isLoading ? (
+            <p className="text-sm text-slate-600">Loading feed…</p>
+          ) : feedError ? (
+            <div className="space-y-2">
+              <p className="text-sm text-red-600">❌ {feedError}</p>
+              <button
+                type="button"
+                onClick={() => loadFeed(0)}
+                className="text-sm text-accent underline"
+              >
+                Try again
+              </button>
+            </div>
+          ) : feed.length === 0 ? (
+            <p className="text-sm text-slate-600">
+              No kudos yet. Be the first to recognise a teammate!
+            </p>
+          ) : null}
+        </div>
+
+        {!isLoading && !feedError && feed.length > 0 && (
           <ul className="space-y-3">
             {feed.map((kudos) => (
               <li
@@ -450,6 +624,14 @@ export default function KudosPage() {
           </ul>
         )}
 
+        {/* A failed "Load more" keeps the existing feed on screen and reports
+            the failure inline; the button below stays available to retry. */}
+        {loadMoreError && (
+          <p className="text-sm text-amber-600" role="status">
+            ⚠ {loadMoreError}
+          </p>
+        )}
+
         {/* Only offer "Load more" once the first page is shown and the last
             page came back full. Disabled while the next page is loading. */}
         {!isLoading && !feedError && hasMore && (
@@ -459,7 +641,11 @@ export default function KudosPage() {
             disabled={isLoadingMore}
             className="text-sm text-accent underline disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            {isLoadingMore ? "Loading…" : "Load more"}
+            {isLoadingMore
+              ? "Loading…"
+              : loadMoreError
+                ? "Try again"
+                : "Load more"}
           </button>
         )}
       </section>

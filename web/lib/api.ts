@@ -100,13 +100,21 @@ export const api = {
   getTeamPulses: () => request("/api/v1/pulse/team"),
 
   // limit/offset are optional; when omitted the backend defaults apply
-  // (limit=50, offset=0), so existing callers keep working unchanged.
-  getKudosFeed: (params: { limit?: number; offset?: number } = {}) => {
+  // (limit=50, offset=0), so existing callers keep working unchanged. An
+  // optional AbortSignal lets the caller cancel an in-flight fetch (used by the
+  // kudos page to drop superseded/unmounted requests); it flows straight
+  // through to fetch via request()'s options, so `request()` itself is unchanged.
+  getKudosFeed: (
+    params: { limit?: number; offset?: number } = {},
+    options: { signal?: AbortSignal } = {}
+  ) => {
     const qs = new URLSearchParams();
     if (params.limit !== undefined) qs.set("limit", String(params.limit));
     if (params.offset !== undefined) qs.set("offset", String(params.offset));
     const suffix = qs.toString() ? `?${qs}` : "";
-    return request<KudosResponse[]>(`/api/v1/kudos/feed${suffix}`);
+    return request<KudosResponse[]>(`/api/v1/kudos/feed${suffix}`, {
+      signal: options.signal,
+    });
   },
 
   submitKudos: (data: KudosCreate) =>
