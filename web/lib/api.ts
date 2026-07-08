@@ -54,22 +54,22 @@ export const api = {
   health: () => request<{ status: string }>("/health"),
 
   submitPulse: (data: PulseCreate) =>
-    request("/api/v1/pulse", {
+    request("/api/v1/pulses", {
       method: "POST",
       body: JSON.stringify(data),
     }),
 
   submitStandup: (data: StandupCreate) =>
-    request("/api/v1/standup", {
+    request("/api/v1/standups", {
       method: "POST",
       body: JSON.stringify(data),
     }),
 
-  getMyPulses: () => request("/api/v1/pulse/me"),
+  getMyPulses: () => request("/api/v1/pulses/me"),
 
-  getTeamPulses: () => request("/api/v1/pulse/team"),
+  getTeamPulses: () => request("/api/v1/pulses/summary?scope=team"),
 
   getKudosFeed: () => request("/api/v1/kudos/feed"),
 
-  getTeamStandups: () => request("/api/v1/standup/team"),
+  getTeamStandups: () => request("/api/v1/standups?scope=team"),
 };
