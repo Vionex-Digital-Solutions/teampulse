@@ -17,6 +17,12 @@ const MAX_MESSAGE_LENGTH = 1000;
 // limit at 100 — see backend/app/api/v1/kudos.py.)
 const PAGE_SIZE = 20;
 
+// Backend origin for the live SSE stream. The stream lives on the FastAPI
+// origin (not Next's), so it needs an absolute URL. Mirrors web/lib/api.ts,
+// which keeps its BASE_URL private; if that's ever exported, import it instead.
+const API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
 // The fixed set of categories the backend accepts (KudosCategory enum), paired
 // with human-friendly labels for the <select>. Keep the values in sync with
 // backend/app/schemas/kudos.py.
@@ -156,6 +162,47 @@ export default function KudosPage() {
   useEffect(() => {
     loadFeed(0);
   }, [loadFeed]);
+
+  // ---- Live updates (Server-Sent Events) ----
+  // Subscribe to GET /api/v1/kudos/stream, which pushes each newly created
+  // kudos as it happens. This sits on top of the initial fetch: loadFeed(0)
+  // still loads history; SSE only adds arrivals that happen after we connect.
+  useEffect(() => {
+    // EventSource can't send an Authorization header, so the backend takes the
+    // JWT as a ?token= query param. There's no token store in the app yet, so
+    // we look in localStorage and skip the live feed entirely when it's absent
+    // — a tokenless connection would 401 and EventSource would retry forever.
+    const token =
+      typeof window !== "undefined" ? localStorage.getItem("token") : null;
+    if (!token) return;
+
+    const es = new EventSource(
+      `${API_BASE_URL}/api/v1/kudos/stream?token=${encodeURIComponent(token)}`
+    );
+
+    es.onmessage = (event) => {
+      // Each event's data is one KudosResponse JSON object (same shape as feed
+      // items). Guard against a malformed payload so a bad event can't crash us.
+      let incoming: KudosResponse;
+      try {
+        incoming = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+      // Prepend newest-first, but ignore anything already shown — e.g. a kudos
+      // you just sent arrives via both loadFeed(0) and this stream.
+      setFeed((prev) =>
+        prev.some((k) => k.id === incoming.id) ? prev : [incoming, ...prev]
+      );
+    };
+
+    // We deliberately don't touch feedError on connection errors: EventSource
+    // reconnects on its own, and hijacking the error UI would disturb the
+    // existing loading/empty/error logic.
+
+    // Close the stream on unmount so we don't leak it or keep reconnecting.
+    return () => es.close();
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
