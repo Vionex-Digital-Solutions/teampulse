@@ -1,6 +1,7 @@
 """Pulse check-in endpoints."""
 
 from datetime import date
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, status
 
@@ -47,16 +48,21 @@ async def get_my_pulses(
 
 
 @router.get(
-    "/team",
+    "/summary",
     response_model=PulseTeamResponse,
     responses={400: {"description": "target_date is in the future"}},
 )
-async def get_team_pulses(
+async def get_pulse_summary(
     db: DbSession,
     current_user: CurrentUser,
+    scope: Literal["team"] = "team",
     target_date: date | None = None,
 ) -> PulseTeamResponse:
-    """Get aggregated pulse data for the team (defaults to today's summary)."""
+    """Get an aggregated pulse summary (defaults to today's team summary).
+
+    ``scope`` is a query-string filter (currently only ``team``) so future
+    scopes can be added without minting a new URL.
+    """
     # A future date can't have data yet -> that's bad input, not an empty success.
     if target_date is not None and target_date > date.today():
         raise HTTPException(

@@ -1,5 +1,7 @@
 """Async standup endpoints."""
 
+from typing import Literal
+
 from fastapi import APIRouter
 
 from app.api.deps import CurrentUser, DbSession
@@ -18,10 +20,15 @@ async def submit_standup(
     raise NotImplementedError("Sprint 1: implement standup submission")
 
 
-@router.get("/team", response_model=list[StandupResponse])
-async def get_team_standups(
+@router.get("", response_model=list[StandupResponse])
+async def get_standups(
     db: DbSession,
     current_user: CurrentUser,
+    scope: Literal["team"] = "team",
 ) -> list[StandupResponse]:
-    """Get today's standup entries for the whole team."""
+    """List standup entries, filtered by ``scope`` (defaults to today's team).
+
+    ``scope`` is a query-string filter (currently only ``team``) rather than a
+    separate ``/team`` URL.
+    """
     raise NotImplementedError("Sprint 1: implement team standup retrieval")

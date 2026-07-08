@@ -29,13 +29,13 @@ def _auth(token: str) -> dict[str, str]:
 
 @pytest.mark.asyncio
 async def test_pulse_me_is_scoped_to_the_caller(client: AsyncClient) -> None:
-    """User B must never see User A's pulses via GET /pulse/me."""
+    """User B must never see User A's pulses via GET /pulses/me."""
     token_a = await _register(client, "alice@vionex.com")
     token_b = await _register(client, "bob@vionex.com")
 
     # Alice submits a pulse.
     submit = await client.post(
-        "/api/v1/pulse",
+        "/api/v1/pulses",
         json={"mood": 4, "energy": 3, "has_blocker": False, "note": "alice-only"},
         headers=_auth(token_a),
     )
@@ -43,7 +43,7 @@ async def test_pulse_me_is_scoped_to_the_caller(client: AsyncClient) -> None:
     alice_pulse_id = submit.json()["id"]
 
     # Alice sees exactly her own pulse.
-    a_me = await client.get("/api/v1/pulse/me", headers=_auth(token_a))
+    a_me = await client.get("/api/v1/pulses/me", headers=_auth(token_a))
     assert a_me.status_code == 200
     a_rows = a_me.json()
     assert len(a_rows) == 1
@@ -51,30 +51,30 @@ async def test_pulse_me_is_scoped_to_the_caller(client: AsyncClient) -> None:
     assert a_rows[0]["note"] == "alice-only"
 
     # Bob submitted nothing -> Bob sees nothing. He cannot reach Alice's row.
-    b_me = await client.get("/api/v1/pulse/me", headers=_auth(token_b))
+    b_me = await client.get("/api/v1/pulses/me", headers=_auth(token_b))
     assert b_me.status_code == 200
     assert b_me.json() == []
 
 
 @pytest.mark.asyncio
 async def test_pulse_me_never_leaks_across_users(client: AsyncClient) -> None:
-    """Each user's /pulse/me returns only rows they own, even when both submit."""
+    """Each user's /pulses/me returns only rows they own, even when both submit."""
     token_a = await _register(client, "alice2@vionex.com")
     token_b = await _register(client, "bob2@vionex.com")
 
     await client.post(
-        "/api/v1/pulse",
+        "/api/v1/pulses",
         json={"mood": 5, "energy": 5, "note": "a"},
         headers=_auth(token_a),
     )
     await client.post(
-        "/api/v1/pulse",
+        "/api/v1/pulses",
         json={"mood": 1, "energy": 2, "note": "b"},
         headers=_auth(token_b),
     )
 
-    a_rows = (await client.get("/api/v1/pulse/me", headers=_auth(token_a))).json()
-    b_rows = (await client.get("/api/v1/pulse/me", headers=_auth(token_b))).json()
+    a_rows = (await client.get("/api/v1/pulses/me", headers=_auth(token_a))).json()
+    b_rows = (await client.get("/api/v1/pulses/me", headers=_auth(token_b))).json()
 
     # Every row returned to a caller belongs to that caller — no cross-leak.
     a_ids = {r["user_id"] for r in a_rows}
@@ -89,5 +89,5 @@ async def test_pulse_me_never_leaks_across_users(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_pulse_me_requires_authentication(client: AsyncClient) -> None:
     """No token -> 401 (authentication), the gate before any ownership check."""
-    resp = await client.get("/api/v1/pulse/me")
+    resp = await client.get("/api/v1/pulses/me")
     assert resp.status_code in (401, 403)  # missing bearer credentials
