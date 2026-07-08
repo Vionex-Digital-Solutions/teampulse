@@ -143,7 +143,15 @@ export default function KudosPage() {
     }
     try {
       const data = await api.getKudosFeed({ limit: PAGE_SIZE, offset });
-      setFeed((prev) => (replacing ? data : [...prev, ...data]));
+      // On append, drop any items already shown. A live SSE event arriving
+      // while this "load more" is in flight shifts the backend's offset window,
+      // so the next page can overlap what we already have; dedup by id keeps
+      // each kudos (and its React key) unique. Replacing needs no dedup.
+      setFeed((prev) => {
+        if (replacing) return data;
+        const seen = new Set(prev.map((k) => k.id));
+        return [...prev, ...data.filter((k) => !seen.has(k.id))];
+      });
       // A full page means there may be more; a short page is the end.
       setHasMore(data.length === PAGE_SIZE);
     } catch (err: any) {
@@ -171,7 +179,8 @@ export default function KudosPage() {
     // EventSource can't send an Authorization header, so the backend takes the
     // JWT as a ?token= query param. There's no token store in the app yet, so
     // we look in localStorage and skip the live feed entirely when it's absent
-    // — a tokenless connection would 401 and EventSource would retry forever.
+    // — a tokenless connection would 401, which EventSource treats as a fatal
+    // error (it does not retry non-2xx responses); onerror below handles that.
     const token =
       typeof window !== "undefined" ? localStorage.getItem("token") : null;
     if (!token) return;
@@ -196,9 +205,16 @@ export default function KudosPage() {
       );
     };
 
-    // We deliberately don't touch feedError on connection errors: EventSource
-    // reconnects on its own, and hijacking the error UI would disturb the
-    // existing loading/empty/error logic.
+    es.onerror = () => {
+      // Two cases land here. (1) A transient drop of an open stream: readyState
+      // is CONNECTING and EventSource is already reconnecting on its own — leave
+      // it alone. (2) A fatal failure (e.g. a 401 from an expired/invalid token):
+      // readyState is CLOSED and it will never retry, so close explicitly to
+      // stop leaking a dead handle. In neither case do we touch feedError: the
+      // history loaded via loadFeed(0) is still valid, and hijacking the feed's
+      // error UI over a lost *live* connection would misrepresent that state.
+      if (es.readyState === EventSource.CLOSED) es.close();
+    };
 
     // Close the stream on unmount so we don't leak it or keep reconnecting.
     return () => es.close();
